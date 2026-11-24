@@ -177,12 +177,3 @@ docker compose down -v     # remove the container AND delete all data
 
 ---
 
-## 🩺 Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `no configuration file provided: not found` | The file must be named exactly `docker-compose.yml` (hyphen, not underscore) and be in the folder you run the command from. |
-| `password authentication failed for user "postgres"` | The password in `DATABASE_URL` must match `POSTGRES_PASSWORD`. PostgreSQL only reads credentials when the volume is first created, so after changing them run `docker compose down -v` and start again. |
-| Same error, credentials look correct | A local PostgreSQL may be using port 5432. Stop it, or map Docker to another port (`"5433:5432"`) and use `5433` in `DATABASE_URL`. |
-| `connection refused` right after `up -d` | The database needs a few seconds. Wait until `docker compose ps` shows `healthy`. |
-| `Could not read 'output.json'` | The input file doesn't exist. Generate it first with `script.py`, or pass the right path with `--input`. |
