@@ -4,3 +4,4 @@ psycopg[binary]>=3.1
 python-dotenv>=1.0
 fastapi>=0.110
 uvicorn[standard]>=0.29
+mcp>=2.3,<3
