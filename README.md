@@ -193,14 +193,18 @@ A small read-only API on top of the migrated data. It connects to the same Postg
 
 ## How it works
 
-- 📋 `GET /records` returns records from the database.
-- 🔓 With no parameters it simply returns the first **50** records.
-- 🔎 Filter by **agency name**, **district**, **status** and **period** (date range), one at a time or in any combination.
-- 🧱 Never returns more than **50 records** per request. Use `offset` to page through the rest.
-- 📊 Every response includes `total`, the number of records matching your filters.
+| Endpoint | What it does |
+|---|---|
+| `GET /records` | Returns records, filtered by **agency name**, **district**, **status** and **period** (one filter or any combination) |
+| `GET /search` | Text search in the `text` field |
+| `GET /statistics` | Number of records per **agency name and status** for a period |
+
+- 🔓 `/records` with no parameters simply returns the first **50** records.
+- 🧱 Every endpoint returns at most **50 results** per request. Use `offset` to page through the rest.
+- 📊 Every response includes `total`: the number of matches (or of agency/status rows for `/statistics`) before the limit is applied.
 - 📖 Interactive documentation is built in at `/docs`.
 
-## Using the filters
+## Using `/records` (filters)
 
 All parameters are optional and can be combined.
 
@@ -266,3 +270,52 @@ curl "http://127.0.0.1:8000/records?status=open&district=north"
 ```
 
 Invalid input returns a `422` error with an explanation, for example `limit` above 50, an unknown `status`, or `date_from` later than `date_to`.
+
+## Using `/search` (text search)
+
+Searches the `text` field. Matching is case-insensitive and **all words must appear, in any order**.
+
+| Parameter | Meaning | Example |
+|---|---|---|
+| `q` | Words to look for (required) | `q=repair budget` |
+| `limit` | Results per response (default and maximum: 50) | `limit=20` |
+| `offset` | Skip this many results, for paging | `offset=20` |
+
+```
+http://127.0.0.1:8000/search?q=repair budget
+http://127.0.0.1:8000/search?q=inspection&limit=20&offset=20
+```
+
+The response has the same shape as `/records` (`total`, `limit`, `offset`, `results`). A missing or empty `q` returns a `422` error.
+
+## Using `/statistics`
+
+Counts records per `agency_name` and `status`, for a period. Without a period it counts all records.
+
+| Parameter | Meaning | Example |
+|---|---|---|
+| `date_from` | Period start, inclusive (`YYYY-MM-DD`) | `date_from=2026-03-01` |
+| `date_to` | Period end, inclusive (`YYYY-MM-DD`) | `date_to=2026-03-31` |
+| `date_field` | Date the period applies to: `created_at` (default) or `updated_at` | `date_field=updated_at` |
+| `limit` | Rows per response (default and maximum: 50) | `limit=10` |
+| `offset` | Skip this many rows, for paging | `offset=10` |
+
+```
+http://127.0.0.1:8000/statistics
+http://127.0.0.1:8000/statistics?date_from=2026-03-01&date_to=2026-03-31
+```
+
+```json
+{
+  "total": 30,
+  "limit": 50,
+  "offset": 0,
+  "results": [
+    { "agency_name": "City Police", "status": "closed", "count": 284 },
+    { "agency_name": "City Police", "status": "in_progress", "count": 271 },
+    { "agency_name": "City Police", "status": "open", "count": 241 }
+  ]
+}
+```
+
+Rows are sorted by agency name, then status. Here `total` is the number of agency/status rows for the period (30 = 10 agencies x 3 statuses).
