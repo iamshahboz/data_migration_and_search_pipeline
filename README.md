@@ -104,7 +104,9 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/records_db
 
 ---
 
-## 🚀 Quick start
+## 🚀 How to run
+
+Run these commands in order, from the project folder, with your virtual environment active and your `.env` file created (see **Setup** above).
 
 ```bash
 # 1. Start PostgreSQL in the background
@@ -115,13 +117,15 @@ python gen_dummy_json.py --records 500 --inaccurate 40
 
 # 3. Load it into PostgreSQL
 python load_data.py --input output.json
+
+# 4. Start the API (builds the image on the first run)
+docker compose up -d --build
 ```
 
-Check that the container is `healthy` before step 3:
-
-```bash
-docker compose ps
-```
+- Before step 3, check that the database container is `healthy`: `docker compose ps`
+- Once step 4 is done, the API is at http://127.0.0.1:8000/records and the interactive docs are at http://127.0.0.1:8000/docs
+- Running step 3 again with the same file is safe: no duplicates are created.
+- Developing the API? Use `uvicorn api:app --reload` instead of step 4 for auto-reload.
 
 ---
 
@@ -185,9 +189,9 @@ docker compose down -v     # remove the containers AND delete all data
 
 # Part 2: Search API (FastAPI)
 
-A small read-only API on top of the migrated data. It connects to the same PostgreSQL database and lets you search and filter records.
+A small read-only API on top of the migrated data. It connects to the same PostgreSQL database and lets you search and filter records. (To start it, see [How to run](#-how-to-run).)
 
-## What it does
+## How it works
 
 - 📋 `GET /records` returns records from the database.
 - 🔓 With no parameters it simply returns the first **50** records.
@@ -196,31 +200,7 @@ A small read-only API on top of the migrated data. It connects to the same Postg
 - 📊 Every response includes `total`, the number of records matching your filters.
 - 📖 Interactive documentation is built in at `/docs`.
 
-## How to run
-
-> Load the data first (Quick start above). Before that the API still works, but it returns an empty list (`"total": 0`).
-
-**Option A: with Docker Compose (database + API together)**
-
-```bash
-docker compose up -d --build
-```
-
-**Option B: locally, with auto-reload (handy while developing)**
-
-```bash
-docker compose up -d postgres
-uvicorn api:app --reload
-```
-
-Either way, open:
-
-- API: http://127.0.0.1:8000/records
-- Interactive docs (try every filter in the browser): http://127.0.0.1:8000/docs
-
-> With Option A the API reaches the database through the service name `postgres`, set automatically in `docker-compose.yml`. With Option B it uses `DATABASE_URL` from your `.env` (host `localhost`).
-
-## How to use the filters
+## Using the filters
 
 All parameters are optional and can be combined.
 
