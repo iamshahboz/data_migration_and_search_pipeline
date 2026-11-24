@@ -117,6 +117,8 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/records_db
 
 ## 🚀 How to run
 
+> **Before you start:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and make sure it's running. The `docker compose` commands below won't work without it.
+
 Run these commands in order, from the project folder, with your virtual environment active and your `.env` file created (see **Setup** above).
 
 ```bash
@@ -134,7 +136,7 @@ docker compose up -d --build
 ```
 
 - Before step 3, check that the database container is `healthy`: `docker compose ps`
-- Once step 4 is done, the API is at http://127.0.0.1:8000/records and the interactive docs are at http://127.0.0.1:8000/docs
+- Once step 4 is done, the docs are at http://127.0.0.1:8000/docs
 - Running step 3 again with the same file is safe: no duplicates are created.
 - Developing the API? Use `uvicorn api:app --reload` instead of step 4 for auto-reload.
 
