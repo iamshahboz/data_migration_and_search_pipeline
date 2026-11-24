@@ -17,5 +17,19 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build: .
+    container_name: records_api
+    restart: unless-stopped
+    environment:
+      # Inside the compose network the database host is the service name
+      # "postgres" (not localhost) and the port is the container port 5432.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-records_db}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pgdata:
