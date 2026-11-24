@@ -1,7 +1,7 @@
 """Database helpers built on SQLAlchemy: engine, table creation, batch insert."""
 import logging
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Engine, create_engine, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
@@ -24,6 +24,12 @@ def create_tables(engine: Engine) -> None:
     Base.metadata.create_all(engine)
     logger.info("Connected to database '%s' on host '%s'; tables ready (%s)",
                 engine.url.database, engine.url.host, AgencyRecord.__tablename__)
+
+
+def get_existing_ids(engine: Engine) -> set[int]:
+    """Ids already stored in the table (used to skip records that were migrated before)."""
+    with Session(engine) as session:
+        return set(session.scalars(select(AgencyRecord.id)))
 
 
 def insert_batch(engine: Engine, records: list[Record]) -> int:

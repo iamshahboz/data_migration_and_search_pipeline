@@ -84,6 +84,8 @@ def load(engine: Engine, raw_records: list, batch_size: int) -> dict:
              "duplicates": 0, "already_in_db": 0}
     batch: list[Record] = []
     seen_ids: set[int] = set()
+    existing_ids = db.get_existing_ids(engine)
+    logger.info("Found %d records already in the database", len(existing_ids))
 
     def flush() -> None:
         if not batch:
@@ -113,6 +115,11 @@ def load(engine: Engine, raw_records: list, batch_size: int) -> dict:
             continue
         seen_ids.add(record.id)
 
+        if record.id in existing_ids:  # migrated in a previous run: no DB write at all
+            stats["already_in_db"] += 1
+            logger.debug("%s skipped - already in database", label)
+            continue
+
         batch.append(record)
         if len(batch) >= batch_size:
             flush()
@@ -131,6 +138,8 @@ def log_summary(stats: dict, duration: float) -> None:
     logger.info("  - duplicates:       %d", stats["duplicates"])
     if stats["already_in_db"]:
         logger.info("Already in database:  %d  (ids existed from a previous run)", stats["already_in_db"])
+    if stats["inserted"] == 0 and stats["already_in_db"] > 0:
+        logger.info("Data already migrated - nothing new to insert, database unchanged.")
     logger.info("Duration:             %.2fs", duration)
 
 
