@@ -39,7 +39,7 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 
 ```
 .
-├── script.py             # generates dummy data (valid + inaccurate records)
+├── gen_dummy_json.py             # generates dummy data (valid + inaccurate records)
 ├── load_data.py          # main migration script (CLI, workflow, logging)
 ├── schemas.py            # Pydantic model: validation rules
 ├── models.py             # SQLAlchemy model: database table definition
@@ -105,7 +105,7 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5432/records_db
 docker compose up -d
 
 # 2. Generate data: 500 records, 40 of them inaccurate
-python script.py --records 500 --inaccurate 40
+python gen_dummy_json.py --records 500 --inaccurate 40
 
 # 3. Load it into PostgreSQL
 python load_data.py --input output.json
