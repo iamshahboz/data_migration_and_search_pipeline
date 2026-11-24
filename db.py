@@ -12,11 +12,11 @@ from schemas import Record
 logger = logging.getLogger(__name__)
 
 
-def get_engine(database_url: str) -> Engine:
+def get_engine(database_url: str, **engine_kwargs) -> Engine:
     url = make_url(database_url)
     if url.drivername == "postgresql":  # use psycopg (v3) instead of the default psycopg2
         url = url.set(drivername="postgresql+psycopg")
-    return create_engine(url)
+    return create_engine(url, **engine_kwargs)
 
 
 def create_tables(engine: Engine) -> None:
