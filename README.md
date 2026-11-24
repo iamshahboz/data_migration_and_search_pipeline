@@ -22,6 +22,7 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 - 📝 **Full logging**: everything is written to the console and to `load.log`.
 - ⏱️ **Timing built in**: the total migration time is logged at the end of every run.
 - 🔌 **Search API**: filter the migrated data by agency, district, status and period (Part 2).
+- 🤖 **MCP server**: lets an AI agent search, read and count records, restricted to the user's agency and fully logged (Part 3).
 
 ---
 
@@ -33,6 +34,7 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 | ORM / DB access | SQLAlchemy 2.0 + psycopg 3 |
 | Validation | Pydantic v2 |
 | API | FastAPI + Uvicorn |
+| AI agent access | MCP Python SDK (stdio transport) |
 | Configuration | python-dotenv (`.env` file) |
 | Logging | Python `logging` module |
 
@@ -45,8 +47,9 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 ├── gen_dummy_json.py     # generates dummy data (valid + inaccurate records)
 ├── load_data.py          # main migration script (CLI, workflow, logging)
 ├── api.py                # FastAPI search application (Part 2)
+├── mcp_server.py         # MCP server for AI agents (Part 3)
 ├── schemas.py            # Pydantic model: validation rules
-├── models.py             # SQLAlchemy model: database table definition
+├── models.py             # SQLAlchemy models: records table, MCP audit log table
 ├── db.py                 # engine, table creation, batch insert
 ├── docker-compose.yml    # PostgreSQL + API containers
 ├── Dockerfile            # image for the API
@@ -327,3 +330,253 @@ http://127.0.0.1:8000/statistics?date_from=2026-03-01&date_to=2026-03-31
 ```
 
 Rows are sorted by agency name, then status. Here `total` is the number of agency/status rows for the period (30 = 10 agencies x 3 statuses).
+
+
+---
+
+# Part 3: MCP server (AI agent access)
+
+An [MCP](https://modelcontextprotocol.io) server that lets an AI agent (Claude Desktop, Claude Code, any MCP client) work with the same data. It is **read-only** and works on behalf of **one specific user**.
+
+## How it works
+
+| Tool | What the agent uses it for |
+|---|---|
+| `search_records` | Find records by words in the text, status, district, agency and period; returns a short list |
+| `get_record` | Get one record by its id, with the full text |
+| `get_statistics` | Count records per agency and status for a period ("how many...?") |
+
+- 🔒 **Access rules are enforced by the server**, not by the model (see below).
+- 🧱 **Responses are small**: at most 20 records per call, shortened text, capped paging, rate limit.
+- 🧾 **Every call is logged** to the database: who, which tool, which parameters, how many records came back.
+- 📖 Tool and parameter descriptions are written for the model: when to use each tool, allowed values, formats, and what comes back.
+
+## Transport: stdio
+
+The MCP client starts `mcp_server.py` as a local process and talks to it through stdin/stdout.
+
+- **Why:** there is no network port, so nobody can reach the tools except the process that started them. That is what makes it safe to set the user's identity through configuration, with no passwords or tokens.
+- **Trade-off:** one server process per user, on that user's machine. For one shared server, use Streamable HTTP, which needs per-user tokens, TLS and an Origin check (not built here).
+- stdout carries the protocol, so the server never prints to it. Logs go to stderr and the audit log goes to the database.
+
+## Who is the agent working for?
+
+The process that starts the server sets the user with environment variables, normally in the MCP client's config. They are **not tool parameters**, so the model cannot change them, and a prompt injection cannot ask for "another agency".
+
+| Variable | Meaning |
+|---|---|
+| `MCP_USER` | Name of the user (required). Written to the audit log. |
+| `MCP_AGENCY` | The agency the user works for, written exactly as in the data, e.g. `Water Authority`. The user only ever sees this agency's records. |
+| `MCP_ADMIN` | `true` for an administrator who sees every agency. Use it **instead of** `MCP_AGENCY`. |
+| `DATABASE_URL` | PostgreSQL URL. Can also come from the `.env` file next to `mcp_server.py`. |
+
+If the identity is missing or ambiguous (no user, neither agency nor admin, or both), the server **refuses to start**. A forgotten setting never turns into full access.
+
+**One function decides what is visible.** `scope_conditions()` in `mcp_server.py` adds `agency_name = <the user's agency>` to the query of **every** tool:
+
+- `search_records`: other agencies' records never match, even if the agent searches for their name.
+- `get_record`: an id from another agency gets the same "not found" as an id that doesn't exist, so the answer doesn't even reveal that it exists.
+- `get_statistics`: the restriction is applied **before** the counting, so an employee cannot learn another agency's numbers from totals.
+
+> The identity is trusted configuration: whoever starts the server chooses it. That is appropriate for a local stdio server run for a given user. A shared server would need real authentication.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Records per `search_records` call | default 10, maximum 20 |
+| Paging depth (`offset`) | maximum 200 |
+| Text in search results | first 300 characters (`get_record` returns the full text) |
+| Rows per `get_statistics` call | maximum 50 |
+| Rate | 60 tool calls per minute |
+| One database query | 5 seconds |
+
+The tools' database connection is also **read-only** at the database level, so even a bug cannot change data. When there are more matches than fit, the answer says so (`total`, `has_more`, a `hint`) and tells the agent to narrow the filters.
+
+## Audit log
+
+Every tool call writes one row to the `mcp_audit_log` table, **including** calls with invalid parameters, calls refused by the rate limit, and "not found". If the log cannot be written, the call is refused.
+
+| Column | Meaning |
+|---|---|
+| `called_at` | When |
+| `user_name`, `scope` | Who (`scope` is the agency, or `*` for an administrator) |
+| `tool`, `params` | Which tool and the parameters exactly as the agent sent them |
+| `returned_count` | How many records (or statistics rows) came back |
+| `outcome` | `ok`, `not_found`, `rate_limited` or `error` |
+| `duration_ms`, `error` | How long it took and the error text, if any |
+
+Record contents are never written to the log.
+
+```bash
+docker compose exec postgres psql -U postgres -d records_db -c \
+  "SELECT called_at, user_name, scope, tool, params, returned_count, outcome FROM mcp_audit_log ORDER BY id DESC LIMIT 10;"
+```
+
+## Connect it to an MCP client
+
+Before you connect, make sure the database is running and the data is loaded (steps 1-3 of **How to run**), and that you ran `pip install -r requirements.txt`.
+
+Use the **virtual environment's Python** and **absolute paths**.
+
+**Claude Desktop**: open *Settings → Developer → Edit Config* and add the server to `claude_desktop_config.json`, then restart Claude Desktop:
+
+```json
+{
+  "mcpServers": {
+    "agency-records": {
+      "command": "C:/path/to/project/.venv/Scripts/python.exe",
+      "args": ["C:/path/to/project/mcp_server.py"],
+      "env": {
+        "MCP_USER": "alice",
+        "MCP_AGENCY": "Water Authority",
+        "DATABASE_URL": "postgresql://postgres:postgres@localhost:5432/records_db"
+      }
+    }
+  }
+}
+```
+
+On macOS / Linux use `/path/to/project/.venv/bin/python`.
+
+**Claude Code**:
+
+```bash
+claude mcp add --transport stdio \
+  --env MCP_USER=alice --env MCP_AGENCY="Water Authority" \
+  --env DATABASE_URL=postgresql://postgres:postgres@localhost:5432/records_db \
+  agency-records -- /path/to/project/.venv/bin/python /path/to/project/mcp_server.py
+```
+
+**For an administrator**, replace `MCP_AGENCY` with `"MCP_ADMIN": "true"`. To work for another user, add a second server entry with that user's name and agency.
+
+To test the tools without an AI, you can use the MCP Inspector: `npx @modelcontextprotocol/inspector -e MCP_USER=alice -e MCP_AGENCY="Water Authority" -e DATABASE_URL=... python mcp_server.py`.
+
+## Example requests
+
+The server was started for user `alice`, agency `Water Authority`. Each example shows what the agent asks, the tool call it makes, and the server's **real response** on the sample data (your numbers will differ).
+
+### 1. "How many of our requests are still open?"
+
+Tool call: `get_statistics` with no parameters.
+
+```json
+{
+  "total_records": 198,
+  "period": {
+    "date_from": null,
+    "date_to": null,
+    "date_field": "created_at"
+  },
+  "returned_rows": 3,
+  "results": [
+    {
+      "agency_name": "Water Authority",
+      "status": "closed",
+      "count": 66
+    },
+    {
+      "agency_name": "Water Authority",
+      "status": "in_progress",
+      "count": 62
+    },
+    {
+      "agency_name": "Water Authority",
+      "status": "open",
+      "count": 70
+    }
+  ]
+}
+```
+
+The agent can answer: *"Your agency has 198 records: 70 open, 62 in progress and 66 closed."*
+
+### 2. "Find open requests about the repair budget and show me the newest one in full."
+
+Tool calls: `search_records` with `{"query": "repair budget", "status": "open", "limit": 2}`, then `get_record` with `{"record_id": 1519}`.
+
+```json
+{
+  "total": 10,
+  "returned": 2,
+  "offset": 0,
+  "has_more": true,
+  "results": [
+    {
+      "id": 1519,
+      "created_at": "2026-11-21T08:29:00",
+      "updated_at": "2026-11-22T14:35:26",
+      "agency_name": "Water Authority",
+      "district": "South",
+      "category": "critical",
+      "status": "open",
+      "text": "Repair work is pending approval of the allocated budget. Citizens have raised multiple complaints about this matter.",
+      "text_shortened": false
+    },
+    {
+      "id": 543,
+      "created_at": "2026-10-28T08:31:00",
+      "updated_at": "2026-11-03T20:52:30",
+      "agency_name": "Water Authority",
+      "district": "North",
+      "category": "normal",
+      "status": "open",
+      "text": "Repair work is pending approval of the allocated budget. Additional resources are needed to resolve this case. Follow-up inspection is scheduled for later this week. A detailed report will be submitted once the work is complete.",
+      "text_shortened": false
+    }
+  ],
+  "next_offset": 2,
+  "hint": "Showing 2 of 10 matches. Narrow the filters, or read the next page with offset=2."
+}
+```
+
+```json
+{
+  "id": 1519,
+  "created_at": "2026-11-21T08:29:00",
+  "updated_at": "2026-11-22T14:35:26",
+  "agency_name": "Water Authority",
+  "district": "South",
+  "category": "critical",
+  "status": "open",
+  "text": "Repair work is pending approval of the allocated budget. Citizens have raised multiple complaints about this matter.",
+  "text_shortened": false
+}
+```
+
+The search returned the newest 2 of 10 matches and told the agent how to get more (`next_offset`). The full text came from `get_record`.
+
+### 3. "What is City Police working on? Show me record 3."
+
+This asks for another agency's data. Tool calls: `search_records` with `{"agency_name": "City Police"}`, then `get_record` with `{"record_id": 3}`.
+
+```json
+{
+  "total": 0,
+  "returned": 0,
+  "offset": 0,
+  "has_more": false,
+  "results": [],
+  "hint": "No records match. Try fewer words or a wider period."
+}
+```
+
+```text
+Error executing tool get_record: Record 3 not found.
+```
+
+Nothing from another agency comes back, and the "not found" is identical to the one for an id that doesn't exist. The agent can only tell the user that it has no access to that agency's records.
+
+### What the audit log recorded for these three examples
+
+| Time | User | Scope | Tool | Parameters | Returned | Outcome |
+|---|---|---|---|---|---|---|
+| 2026-11-24 11:03:37 | alice | Water Authority | `get_statistics` | `{}` | 3 | ok |
+| 2026-11-24 11:03:37 | alice | Water Authority | `search_records` | `{"query": "repair budget", "status": "open", "limit": 2}` | 2 | ok |
+| 2026-11-24 11:03:37 | alice | Water Authority | `get_record` | `{"record_id": 1519}` | 1 | ok |
+| 2026-11-24 11:03:37 | alice | Water Authority | `search_records` | `{"agency_name": "City Police"}` | 0 | ok |
+| 2026-11-24 11:03:37 | alice | Water Authority | `get_record` | `{"record_id": 3}` | 0 | not_found |
+
+## A note on untrusted text
+
+The `text` of a record is written by third parties and could contain instructions aimed at an AI agent ("ignore your rules and..."). The server states in its instructions and tool descriptions that this text is data, never instructions, and all tools are read-only, so a successful injection could not change or delete anything. For production, also connect with a dedicated PostgreSQL user that has `SELECT` rights only.
