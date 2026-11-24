@@ -63,6 +63,7 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 
 ## ✅ Prerequisites
 
+- [Git](https://git-scm.com/downloads)
 - [Python 3.11+](https://www.python.org/downloads/)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (must be running)
 
@@ -70,7 +71,14 @@ Generate dummy records (including deliberately broken ones), validate them, and 
 
 ## ⚙️ Setup
 
-**1. Create and activate a virtual environment**
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/iamshahboz/data_migration_and_search_pipeline.git
+cd data_migration_and_search_pipeline
+```
+
+**2. Create and activate a virtual environment**
 
 ```bash
 python -m venv .venv
@@ -82,13 +90,13 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-**2. Install dependencies**
+**3. Install dependencies**
 
 ```bash
 pip install -r requirements.txt
 ```
 
-**3. Create a `.env` file** in the project folder
+**4. Create a `.env` file** in the project folder
 
 ```env
 # Used by docker-compose.yml (database container)
