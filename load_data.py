@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
                         help="Records per insert transaction (default: 500)")
     parser.add_argument("--database-url", default=None,
                         help="PostgreSQL URL (default: DATABASE_URL env var / .env file)")
+    parser.add_argument("--skipped-file", default="skipped_records.json",
+                        help="JSON file for skipped (wrong) records (default: skipped_records.json)")
     parser.add_argument("--log-level", default="INFO",
                         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                         help="Logging level (default: INFO)")
@@ -79,11 +81,48 @@ def describe_errors(exc: ValidationError) -> str:
     return " | ".join(parts)
 
 
-def load(engine: Engine, raw_records: list, batch_size: int) -> dict:
+def short_reasons(exc: ValidationError) -> str:
+    """Very short reason for the skipped-records file."""
+    reasons = []
+    for err in exc.errors():
+        field = ".".join(str(p) for p in err["loc"])
+        if err["type"] == "missing":
+            reasons.append(f"missing field: {field}")
+        elif not field:  # model-level check, e.g. updated_at earlier than created_at
+            reasons.append(err["msg"].removeprefix("Value error, "))
+        elif field in ("created_at", "updated_at"):
+            reasons.append(f"bad date format: {field}")
+        else:
+            reasons.append(f"invalid value: {field}")
+    return "; ".join(reasons)
+
+
+def duplicate_reason(raw: dict, first_position: int, first_raw: dict) -> str:
+    if raw == first_raw:
+        return f"exact duplicate of record #{first_position}"
+    changed = sorted(k for k in set(raw) | set(first_raw) if raw.get(k) != first_raw.get(k))
+    return f"same id as record #{first_position}, differs in: {', '.join(changed)}"
+
+
+def skipped_entry(raw, reason: str) -> dict:
+    """The record exactly as it was in the input, plus one extra key: reason."""
+    if isinstance(raw, dict):
+        return {**raw, "reason": reason}
+    return {"value": raw, "reason": reason}  # input item wasn't even an object
+
+
+def write_skipped(path: str, skipped: list) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(skipped, f, indent=2, ensure_ascii=False)
+    logger.info("Saved %d skipped records to '%s'", len(skipped), path)
+
+
+def load(engine: Engine, raw_records: list, batch_size: int) -> tuple[dict, list]:
     stats = {"total": len(raw_records), "inserted": 0, "invalid": 0,
              "duplicates": 0, "already_in_db": 0}
     batch: list[Record] = []
-    seen_ids: set[int] = set()
+    seen: dict[int, tuple[int, dict]] = {}  # id -> (position, raw) of first occurrence
+    skipped: list[dict] = []
     existing_ids = db.get_existing_ids(engine)
     logger.info("Found %d records already in the database", len(existing_ids))
 
@@ -107,13 +146,17 @@ def load(engine: Engine, raw_records: list, batch_size: int) -> dict:
         except ValidationError as exc:
             stats["invalid"] += 1
             logger.warning("%s skipped - invalid: %s", label, describe_errors(exc))
+            skipped.append(skipped_entry(raw, short_reasons(exc)))
             continue
 
-        if record.id in seen_ids:
+        if record.id in seen:
             stats["duplicates"] += 1
-            logger.warning("%s skipped - duplicate id", label)
+            first_position, first_raw = seen[record.id]
+            reason = duplicate_reason(raw, first_position, first_raw)
+            logger.warning("%s skipped - duplicate: %s", label, reason)
+            skipped.append(skipped_entry(raw, reason))
             continue
-        seen_ids.add(record.id)
+        seen[record.id] = (position, raw)
 
         if record.id in existing_ids:  # migrated in a previous run: no DB write at all
             stats["already_in_db"] += 1
@@ -125,7 +168,7 @@ def load(engine: Engine, raw_records: list, batch_size: int) -> dict:
             flush()
 
     flush()  # remaining records
-    return stats
+    return stats, skipped
 
 
 def log_summary(stats: dict, duration: float) -> None:
@@ -164,12 +207,17 @@ def main() -> int:
     engine = db.get_engine(database_url)
     try:
         db.create_tables(engine)
-        stats = load(engine, raw_records, args.batch_size)
+        stats, skipped = load(engine, raw_records, args.batch_size)
     except SQLAlchemyError:
         logger.exception("Database error - the failed batch was rolled back, stopping")
         return 1
     finally:
         engine.dispose()
+
+    try:
+        write_skipped(args.skipped_file, skipped)
+    except OSError as exc:
+        logger.error("Could not write skipped records to '%s': %s", args.skipped_file, exc)
 
     log_summary(stats, time.perf_counter() - start)
     return 0
